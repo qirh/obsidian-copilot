@@ -192,16 +192,22 @@ export const CodexBackendDescriptor: BackendDescriptor = {
     // A new vault or plugin lifecycle must not inherit a previous installation failure.
     // https://github.com/Brevilabs/obsidian-copilot-private/issues/368
     codexBinaryManager.forgetSettledError();
+    await codexBinaryManager.ensureManagedInstalled(CODEX_BUNDLE_VERSION);
     if (canAutoUpgrade)
       await codexBinaryManager.autoUpgrade(CODEX_BUNDLE_VERSION, canAutoUpgrade, (message) => {
         new Notice(message);
       });
   },
 
+  async prepareRuntime(): Promise<void> {
+    await codexBinaryManager.ensureManagedInstalled(CODEX_BUNDLE_VERSION);
+  },
+
   managedInstall: {
     getState: () => codexBinaryManager.getActionState(),
     subscribe: (_plugin, onChange) => codexBinaryManager.subscribeRuntimeState(onChange),
     run: async () => {
+      if (await codexBinaryManager.ensureManagedInstalled(CODEX_BUNDLE_VERSION)) return;
       await codexBinaryManager.install();
     },
   },
