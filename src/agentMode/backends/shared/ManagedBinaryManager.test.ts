@@ -68,6 +68,39 @@ describe("ManagedBinaryManager", () => {
     });
     afterEach(() => fs.rmSync(tempDir, { recursive: true, force: true }));
 
+    describe("withRuntimeStart()", () => {
+      it("repairs a managed path removed after readiness before entering spawn (https://github.com/Brevilabs/obsidian-copilot-private/issues/537)", async () => {
+        manager.settings = {
+          binaryPath: path.join(manager.getDataDir(), "missing"),
+          binaryVersion: "1.0.0",
+          binarySource: "managed",
+        };
+        const ready = path.join(manager.getDataDir(), "2.0.0", "binary");
+        manager.pipeline.mockImplementation(async () => {
+          fs.mkdirSync(path.dirname(ready), { recursive: true });
+          fs.writeFileSync(ready, "working");
+          manager.settings = { binaryPath: ready, binaryVersion: "2.0.0", binarySource: "managed" };
+          return { path: ready, version: "2.0.0" };
+        });
+        await expect(
+          manager.withRuntimeStart(
+            async () => fs.readFileSync(manager.settings.binaryPath!, "utf8"),
+            "2.0.0"
+          )
+        ).resolves.toBe("working");
+        expect(manager.pipeline).toHaveBeenCalledWith(
+          expect.objectContaining({ preserveExisting: true })
+        );
+      });
+    });
+    describe("cleanupRuntimes()", () => {
+      it("leaves unrecognized downloads and custom files intact (https://github.com/Brevilabs/obsidian-copilot-private/issues/537)", async () => {
+        manager.settings = { binaryPath: customPath, binarySource: "custom" };
+        await manager.cleanupRuntimes();
+        expect(fs.readFileSync(customPath, "utf8")).toBe("binary");
+      });
+    });
+
     describe("ensureManagedInstalled()", () => {
       const issue = "https://github.com/Brevilabs/obsidian-copilot-private/issues/536";
       beforeEach(() => {

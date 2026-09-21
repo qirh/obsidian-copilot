@@ -1,3 +1,5 @@
+import { waitFor } from "@testing-library/react";
+import { withManagedRuntimeLock } from "@/agentMode/backends/shared/managedRuntimeCleanup";
 import { installCodexArchive, CODEX_BUNDLE_VERSION } from "./codexArchive";
 // Only the download is faked: the real CODEX_BUNDLE_VERSION must reach the manager so the
 // install assertions still compare the version directory against the adapter version the
@@ -133,7 +135,63 @@ describe("CodexBinaryManager", () => {
       });
     });
 
+    describe("cleanupRuntimes()", () => {
+      it("reclaims only lower native directories whose provenance matches their version (https://github.com/Brevilabs/obsidian-copilot-private/issues/537)", async () => {
+        const manager = new CodexBinaryManager();
+        await manager.install();
+        for (const version of ["1.0.0", "1.1.0"]) {
+          const directory = path.join(manager.getDataDir(), version);
+          fs.mkdirSync(directory);
+          fs.writeFileSync(path.join(directory, "codex-acp"), "native");
+          fs.writeFileSync(
+            path.join(directory, "provenance.json"),
+            JSON.stringify({
+              acpVersion: version === "1.0.0" ? version : CODEX_ACP_PINNED_VERSION,
+              target: `darwin-${process.arch}`,
+            })
+          );
+        }
+        mockedExecFile.mockImplementation((_command, _args, _options, callback) => {
+          (callback as (error: Error | null, stdout: string, stderr: string) => void)(
+            null,
+            "p1\nn/other/executable",
+            ""
+          );
+          return {} as childProcess.ChildProcess;
+        });
+        await manager.cleanupRuntimes();
+        expect(fs.existsSync(path.join(manager.getDataDir(), "1.0.0"))).toBe(false);
+        expect(fs.existsSync(path.join(manager.getDataDir(), "1.1.0"))).toBe(true);
+      });
+    });
+
     describe("install()", () => {
+      it("does not publish a download cancelled while another vault owns the runtime lock (https://github.com/Brevilabs/obsidian-copilot-private/issues/537)", async () => {
+        const manager = new CodexBinaryManager();
+        let release!: () => void;
+        let entered!: () => void;
+        const locked = new Promise<void>((resolve) => {
+          entered = resolve;
+        });
+        const holding = withManagedRuntimeLock(manager.getDataDir(), async () => {
+          entered();
+          await new Promise<void>((resolve) => {
+            release = resolve;
+          });
+        });
+        await locked;
+        const installation = manager.install();
+        await waitFor(() =>
+          expect(fs.readdirSync(`${manager.getDataDir()}.runtime-locks`)).toHaveLength(2)
+        );
+        manager.cancelCurrentOperation();
+        release();
+        await expect(installation).rejects.toThrow("Aborted");
+        await holding;
+        expect(fs.existsSync(path.join(manager.getDataDir(), CODEX_BUNDLE_VERSION))).toBe(false);
+        expect(fs.readdirSync(`${manager.getDataDir()}.runtime-locks`)).toEqual([]);
+      });
+
       it("https://github.com/Brevilabs/obsidian-copilot-private/issues/379 selects the verified native bundle without invoking npm", async () => {
         const manager = new CodexBinaryManager();
         const listener = jest.fn();

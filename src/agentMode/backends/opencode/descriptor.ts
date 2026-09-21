@@ -320,6 +320,7 @@ export const OpencodeBackendDescriptor: BackendDescriptor = {
 
   createBackendProcess(args): BackendProcess {
     const { providerRegistry, backendConfigRegistry } = args.plugin.modelManagement;
+    const manager = getOpencodeBinaryManager(args.plugin);
     return simpleBinaryBackendProcess(
       args,
       new OpencodeBackend({
@@ -340,7 +341,11 @@ export const OpencodeBackendDescriptor: BackendDescriptor = {
           }
           return bridge.getChannel();
         },
-      })
+      }),
+      {
+        withRuntimeStart: (start) => manager.withRuntimeStart(start, OPENCODE_PINNED_VERSION),
+        cleanupRuntimes: manager.cleanupRuntimes,
+      }
     );
   },
 
@@ -360,6 +365,7 @@ export const OpencodeBackendDescriptor: BackendDescriptor = {
     // over — and here it stops a failure from one vault greeting the next.
     manager.forgetSettledError();
     await manager.refreshInstallState();
+    await manager.cleanupRuntimes();
     if (canAutoUpgrade)
       await manager.autoUpgrade(OPENCODE_PINNED_VERSION, canAutoUpgrade, (message) => {
         new Notice(message);

@@ -1,7 +1,7 @@
 import type { App } from "obsidian";
 import type CopilotPlugin from "@/main";
 import { AcpBackendProcess } from "@/agentMode/acp/AcpBackendProcess";
-import type { AcpBackend, AcpSpawnDescriptor } from "@/agentMode/acp/types";
+import type { AcpBackend, AcpSpawnDescriptor, AcpProcessLifecycle } from "@/agentMode/acp/types";
 import { augmentPathForNodeShebang } from "@/agentMode/acp/nodeShebangPath";
 import type { BackendDescriptor, BackendProcess } from "@/agentMode/session/types";
 
@@ -48,7 +48,8 @@ export function simpleBinaryBackendProcess(
     clientVersion: string;
     descriptor: BackendDescriptor;
   },
-  backend: AcpBackend
+  backend: AcpBackend,
+  lifecycle?: AcpProcessLifecycle
 ): BackendProcess {
-  return new AcpBackendProcess(args.app, backend, args.clientVersion, args.descriptor);
+  return new AcpBackendProcess(args.app, backend, args.clientVersion, args.descriptor, lifecycle);
 }

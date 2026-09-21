@@ -193,6 +193,7 @@ export const CodexBackendDescriptor: BackendDescriptor = {
     // https://github.com/Brevilabs/obsidian-copilot-private/issues/368
     codexBinaryManager.forgetSettledError();
     await codexBinaryManager.ensureManagedInstalled(CODEX_BUNDLE_VERSION);
+    await codexBinaryManager.cleanupRuntimes();
     if (canAutoUpgrade)
       await codexBinaryManager.autoUpgrade(CODEX_BUNDLE_VERSION, canAutoUpgrade, (message) => {
         new Notice(message);
@@ -228,7 +229,10 @@ export const CodexBackendDescriptor: BackendDescriptor = {
     // symlink. The per-agent toggle drives whether the symlink exists; no
     // deny synthesis is needed because Codex does not cross-discover from
     // `.claude/skills/` or `.opencode/skills/`.
-    return simpleBinaryBackendProcess(args, new CodexBackend(args.clientVersion));
+    return simpleBinaryBackendProcess(args, new CodexBackend(args.clientVersion), {
+      withRuntimeStart: (start) => codexBinaryManager.withRuntimeStart(start, CODEX_BUNDLE_VERSION),
+      cleanupRuntimes: codexBinaryManager.cleanupRuntimes,
+    });
   },
 
   SettingsPanel: CodexSettingsPanel,

@@ -5,10 +5,7 @@ import {
   type InstalledBinary,
   type ManagedBinaryInstallOptions,
 } from "@/agentMode/backends/shared/ManagedBinaryManager";
-import {
-  ManagedInstallAbortError,
-  promoteManagedVersion,
-} from "@/agentMode/backends/shared/managedInstall";
+import { ManagedInstallAbortError } from "@/agentMode/backends/shared/managedInstall";
 import type { ManagedInstallActionState } from "@/agentMode/session/types";
 import { copilotAppDataDir } from "@/utils/appPaths";
 import { requireNodeModule } from "@/utils/desktopRuntime";
@@ -94,6 +91,18 @@ export class CodexBinaryManager extends ManagedBinaryManager<CodexInstallProgres
     return { path: binaryPath, version: CODEX_BUNDLE_VERSION };
   }
 
+  protected async isManagedInstallation(directory: string, version: string): Promise<boolean> {
+    try {
+      const entry = entryPath(directory);
+      return (
+        (await fs().promises.lstat(entry)).isFile() &&
+        (await fs().promises.lstat(path().join(directory, "provenance.json"))).isFile() &&
+        resolveSupportedCodexAcpPackage(entry).version === version
+      );
+    } catch {
+      return false;
+    }
+  }
   protected async installPipeline({
     signal,
     onProgress,
@@ -124,9 +133,8 @@ export class CodexBinaryManager extends ManagedBinaryManager<CodexInstallProgres
       // Cancellation during verification must not replace the working installation.
       // https://github.com/Brevilabs/obsidian-copilot-private/issues/368
       if (signal.aborted) throw new ManagedInstallAbortError();
-      await promoteManagedVersion(stageDir, versionDir, "Codex adapter");
       const finalEntry = entryPath(versionDir);
-      this.selectInstalledBinary({
+      await this.publishInstalledBinary(stageDir, versionDir, {
         binaryPath: finalEntry,
         binaryVersion: CODEX_BUNDLE_VERSION,
         binarySource: "managed",

@@ -1,3 +1,5 @@
+import { pruneManagedRuntimes, withManagedRuntimeLock } from "./managedRuntimeCleanup";
+import { promoteManagedVersion } from "./managedInstall";
 import {
   ManagedInstallAbortError,
   ManagedInstallOperationInFlightError,
@@ -323,6 +325,64 @@ export abstract class ManagedBinaryManager<
   protected selectInstalledBinary(settings: BinarySettings): void {
     this.assertAutomaticSelection();
     this.updateBinarySettings(settings);
+  }
+
+  /** Serializes managed subprocess startup with cross-vault reclamation. */
+  readonly withRuntimeStart = async <T>(start: () => Promise<T>, pin: string): Promise<T> => {
+    const fs = requireNodeModule<typeof import("node:fs")>("fs");
+    while (true) {
+      const result = await withManagedRuntimeLock(this.getDataDir(), async () => {
+        const selected = this.readBinarySettings();
+        // Another vault may prune between readiness and spawn. Repair outside the
+        // mutex, then recheck inside it before starting. Never nest publication locks.
+        // https://github.com/Brevilabs/obsidian-copilot-private/issues/537
+        if (
+          selected.binarySource === "managed" &&
+          selected.binaryPath &&
+          !fs.existsSync(selected.binaryPath)
+        )
+          return null;
+        return { value: await start() };
+      });
+      if (result) return result.value;
+      await this.ensureManagedInstalled(pin);
+    }
+  };
+
+  /** Retries deferred reclamation after startup or a backend process exits. */
+  readonly cleanupRuntimes = async (): Promise<void> => {
+    try {
+      await withManagedRuntimeLock(this.getDataDir(), () => this.pruneRuntimes());
+    } catch (error) {
+      logWarn(`[AgentMode] Runtime cleanup deferred: ${error}`);
+    }
+  };
+
+  protected isManagedInstallation(_directory: string, _version: string): Promise<boolean> {
+    return Promise.resolve(false);
+  }
+
+  private pruneRuntimes(): Promise<void> {
+    return pruneManagedRuntimes(
+      this.getDataDir(),
+      this.readBinarySettings(),
+      (directory, version) => this.isManagedInstallation(directory, version)
+    );
+  }
+
+  protected async publishInstalledBinary(
+    stage: string,
+    destination: string,
+    settings: BinarySettings
+  ): Promise<void> {
+    await withManagedRuntimeLock(this.getDataDir(), async () => {
+      // Waiting for another vault must not revive a cancelled download: https://github.com/Brevilabs/obsidian-copilot-private/issues/537
+      if (this.operation?.signal.aborted) throw new ManagedInstallAbortError();
+      this.assertAutomaticSelection();
+      await promoteManagedVersion(stage, destination, this.displayName);
+      this.selectInstalledBinary(settings);
+      if (!this.recovery) await this.pruneRuntimes();
+    });
   }
 
   abstract getDataDir(): string;

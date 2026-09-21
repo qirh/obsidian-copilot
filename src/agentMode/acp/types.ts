@@ -61,3 +61,9 @@ export interface AcpBackend {
    */
   readContextWindow?(wireModelId: string | null | undefined): Promise<number | null>;
 }
+
+/** Optional backend-owned coordination around starting and retiring a process. */
+export interface AcpProcessLifecycle {
+  withRuntimeStart<T>(start: () => Promise<T>): Promise<T>;
+  cleanupRuntimes(): Promise<void>;
+}

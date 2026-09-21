@@ -1,3 +1,4 @@
+import type { AcpProcessLifecycle } from "./types";
 import { logError, logInfo, logWarn } from "@/logger";
 import {
   ClientSideConnection,
@@ -206,7 +207,8 @@ export class AcpBackendProcess implements BackendProcess {
     private readonly app: App,
     private readonly backend: AcpBackend,
     private readonly clientVersion: string,
-    private readonly descriptor: BackendDescriptor
+    private readonly descriptor: BackendDescriptor,
+    private readonly lifecycle?: AcpProcessLifecycle
   ) {}
 
   /**
@@ -220,23 +222,30 @@ export class AcpBackendProcess implements BackendProcess {
     if (!(adapter instanceof FileSystemAdapter)) {
       throw new Error("Agent Mode requires desktop Obsidian (FileSystemAdapter).");
     }
-    const descriptor = await this.backend.buildSpawnDescriptor({
-      vaultBasePath: adapter.getBasePath(),
-      vaultName: this.app.vault.getName(),
-    });
+    const spawnBackend = async () => {
+      const descriptor = await this.backend.buildSpawnDescriptor({
+        vaultBasePath: adapter.getBasePath(),
+        vaultName: this.app.vault.getName(),
+      });
 
-    const procOpts: AcpProcessManagerOptions = {
-      command: descriptor.command,
-      args: descriptor.args,
-      env: descriptor.env,
-      logTag: this.backend.id,
+      const procOpts: AcpProcessManagerOptions = {
+        command: descriptor.command,
+        args: descriptor.args,
+        env: descriptor.env,
+        logTag: this.backend.id,
+      };
+      const proc = new AcpProcessManager(procOpts);
+      this.process = proc;
+      const raw = proc.start();
+      return { proc, raw };
     };
-    const proc = new AcpProcessManager(procOpts);
-    this.process = proc;
-    const raw = proc.start();
+    const { proc, raw } = this.lifecycle
+      ? await this.lifecycle.withRuntimeStart(spawnBackend)
+      : await spawnBackend();
     const { stdin, stdout } = wrapStreamsForDebug(raw.stdin, raw.stdout, this.backend.id);
 
     proc.onExit(() => {
+      void this.lifecycle?.cleanupRuntimes();
       logWarn(`[AgentMode] backend ${this.backend.id} exited`);
       this.connection = null;
       this.domainHandlers.clear();

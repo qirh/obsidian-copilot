@@ -8,7 +8,7 @@ import {
 import { OPENCODE_MIN_ACP_VERSION, OPENCODE_PINNED_VERSION } from "./ui/opencodeVersion";
 import { OPENCODE_RELEASE_API_URL_TEMPLATE } from "@/constants";
 import { compareSemver } from "@/utils/semver";
-import { logError, logInfo, logWarn } from "@/logger";
+import { logError, logInfo } from "@/logger";
 import type CopilotPlugin from "@/main";
 import { getSettings, setSettings, type OpencodeBackendSettings } from "@/settings/model";
 import { FileSystemAdapter, requestUrl } from "obsidian";
@@ -19,7 +19,6 @@ import type { InstallState as BackendInstallState } from "@/agentMode/session/ty
 import {
   ManagedInstallAbortError,
   ManagedInstallOperationInFlightError,
-  promoteManagedVersion,
   type ManagedInstallRuntimeState,
 } from "@/agentMode/backends/shared/managedInstall";
 
@@ -364,15 +363,31 @@ export class OpencodeBinaryManager extends ManagedBinaryManager<ProgressEvent, I
     return opencodeManagedDataDir(home);
   }
 
+  protected async isManagedInstallation(directory: string, version: string): Promise<boolean> {
+    const manifest = await readManifest(nodePath().join(directory, "install-manifest.json"));
+    const binary = nodePath().join(
+      directory,
+      "bin",
+      process.platform === "win32" ? "opencode.exe" : "opencode"
+    );
+    try {
+      return (
+        manifest?.version === version &&
+        typeof manifest.assetName === "string" &&
+        (await nodeFs().promises.lstat(nodePath().join(directory, "bin"))).isDirectory() &&
+        (await nodeFs().promises.lstat(binary)).isFile()
+      );
+    } catch {
+      return false;
+    }
+  }
+
   /**
    * Full install pipeline: resolve target → fetch release metadata →
    * download → extract → atomic rename → persist settings. Idempotent when
    * an existing install matches the pinned manifest.
    *
-   * Protected and lock-free: {@link install} and
-   * {@link upgradeManaged} are the entry points that own an operation, and
-   * upgrade calls this directly so it does not re-enter the lock it already
-   * holds — or settle the run to idle before it has removed the old version.
+   * Callers own the process-local operation; shared publication owns the cross-vault lock.
    */
   protected async installPipeline(
     opts: InstallPipelineOptions = {}
@@ -417,6 +432,7 @@ export class OpencodeBinaryManager extends ManagedBinaryManager<ProgressEvent, I
         });
       }
       opts.onProgress?.({ phase: "done", version, path: finalBinPath });
+      await this.cleanupRuntimes();
       return { version, path: finalBinPath };
     }
 
@@ -474,9 +490,7 @@ export class OpencodeBinaryManager extends ManagedBinaryManager<ProgressEvent, I
       if (parseVersionFromStdout(verified.stdout) !== version)
         throw new Error(`The opencode download did not report version ${version}.`);
       this.throwIfAborted(opts.signal);
-      await promoteManagedVersion(stageDir, versionDir, "opencode");
-
-      this.selectInstalledBinary({
+      await this.publishInstalledBinary(stageDir, versionDir, {
         binaryVersion: version,
         binaryPath: finalBinPath,
         binarySource: "managed",
@@ -492,39 +506,9 @@ export class OpencodeBinaryManager extends ManagedBinaryManager<ProgressEvent, I
     }
   }
 
-  /**
-   * Upgrade a managed install to the pinned version: install the pinned binary
-   * (atomic — the existing one keeps working until the new one is staged in),
-   * then remove the previously-active managed version dir when it differs.
-   *
-   * Owns the operation itself and drives {@link installPipeline} directly, so
-   * the run stays locked — and the row stays on "installing" — until the old
-   * version dir is gone, not just until the new binary lands.
-   */
+  /** Installs the pinned managed runtime using the shared publication and cleanup lifecycle. */
   async upgradeManaged(opts: InstallOptions = {}): Promise<{ version: string; path: string }> {
-    return this.runExclusive({ kind: "installing", progress: null }, async (signal) => {
-      const prev = readOpencodeSettings();
-      const result = await this.installPipeline({
-        ...opts,
-        signal,
-        version: OPENCODE_PINNED_VERSION,
-        onProgress: (e) => {
-          this.publishProgress(e);
-          opts.onProgress?.(e);
-        },
-      });
-      if (
-        prev.binarySource === "managed" &&
-        prev.binaryVersion &&
-        prev.binaryVersion !== result.version
-      ) {
-        const oldDir = nodePath().join(this.getDataDir(), prev.binaryVersion);
-        await removeDir(oldDir).catch((e) =>
-          logWarn(`[AgentMode] failed to remove old opencode ${oldDir}: ${e}`)
-        );
-      }
-      return result;
-    });
+    return this.install({ ...opts, version: OPENCODE_PINNED_VERSION });
   }
 
   /**
